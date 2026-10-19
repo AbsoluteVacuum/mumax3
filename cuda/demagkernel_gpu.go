@@ -47,9 +47,10 @@ func demagKernelHalfGPU(size, r1, r2 [3]int, cellsize [3]float64, accuracy, L fl
 	}
 
 	// K: images per chunk. Buffer = 3 doubles per (image, job); half the free GPU memory,
-	// and int32 indexing in the kernels (3*K*nJobs < 2^31).
+	// int32 indexing in the kernels (3*K*nJobs < 2^31), and at most 2^26 threads per launch so a
+	// launch stays well below the ~2 s Windows display-driver watchdog (TDR), even on GPUs with slow FP64.
 	free, _ := cu.MemGetInfo()
-	K := min(M, int((free/2-int64(n)*8)/(24*int64(nJobs))), (math.MaxInt32-1)/(3*nJobs))
+	K := min(M, int((free/2-int64(n)*8)/(24*int64(nJobs))), (math.MaxInt32-1)/(3*nJobs), max(1, (1<<26)/nJobs))
 	if K < 1 {
 		return nil, fmt.Errorf("not enough GPU memory (%d bytes free)", free)
 	}

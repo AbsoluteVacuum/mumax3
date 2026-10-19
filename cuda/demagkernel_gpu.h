@@ -27,32 +27,38 @@ __device__ static int kcount(int t, int r1, int r2, int n) {
 }
 
 // Field B at offset (x,y,z) cells from the face charges perpendicular to s of a unit cell.
-// Same arithmetic as mag.CalcDemagKernel; compile with -fmad=false (see Makefile).
+// Same arithmetic, in the same order, as mag.CalcDemagKernel. Products, quotients and square roots
+// use the _rn intrinsics: nvcc never fuses them into FMAs nor approximates them, whatever the build
+// flags (Makefile, deploy_windows.ps1, -use_fast_math), so results match the CPU bit for bit.
+#define MUL(a, b) __dmul_rn((a), (b))
+#define DIV(a, b) __ddiv_rn((a), (b))
+#define SQRT(a) __dsqrt_rn(a)
+
 __device__ static void kernelB(double* B, int s, int x, int y, int z,
                                double cx, double cy, double cz, double accuracy, double L) {
     double cs[3] = {cx, cy, cz};
     int u = s, v = (s + 1) % 3, w = (s + 2) % 3;
-    double Rx = (double)x * cx, Ry = (double)y * cy, Rz = (double)z * cz;
+    double Rx = MUL((double)x, cx), Ry = MUL((double)y, cy), Rz = MUL((double)z, cz);
 
-    double dx = kdelta(x) * cx, dy = kdelta(y) * cy, dz = kdelta(z) * cz;
-    double d = sqrt(dx * dx + dy * dy + dz * dz);
+    double dx = MUL(kdelta(x), cx), dy = MUL(kdelta(y), cy), dz = MUL(kdelta(z), cz);
+    double d = SQRT(MUL(dx, dx) + MUL(dy, dy) + MUL(dz, dz));
     if (d == 0) {
         d = L;
     }
-    double maxSize = d / accuracy;
+    double maxSize = DIV(d, accuracy);
 
-    int nv = (int)(fmax(cs[v] / maxSize, 1.0) + 0.5);
-    int nw = (int)(fmax(cs[w] / maxSize, 1.0) + 0.5);
-    int nx = (int)(fmax(cx / maxSize, 1.0) + 0.5);
-    int ny = (int)(fmax(cy / maxSize, 1.0) + 0.5);
-    int nz = (int)(fmax(cz / maxSize, 1.0) + 0.5);
+    int nv = (int)(fmax(DIV(cs[v], maxSize), 1.0) + 0.5);
+    int nw = (int)(fmax(DIV(cs[w], maxSize), 1.0) + 0.5);
+    int nx = (int)(fmax(DIV(cx, maxSize), 1.0) + 0.5);
+    int ny = (int)(fmax(DIV(cy, maxSize), 1.0) + 0.5);
+    int nz = (int)(fmax(DIV(cz, maxSize), 1.0) + 0.5);
     nv *= 2;
     nw *= 2;
 
-    double scale = 1 / (double)(nv * nw * nx * ny * nz);
-    double surface = cs[v] * cs[w];
-    double charge = surface * scale;
-    double pu1 = cs[u] / 2.;
+    double scale = DIV(1.0, (double)(nv * nw * nx * ny * nz));
+    double surface = MUL(cs[v], cs[w]);
+    double charge = MUL(surface, scale);
+    double pu1 = DIV(cs[u], 2.);
     double pu2 = -pu1;
 
     B[0] = B[1] = B[2] = 0;
@@ -61,31 +67,31 @@ __device__ static void kernelB(double* B, int s, int x, int y, int z,
     p2[u] = pu2;
 
     for (int i = 0; i < nv; i++) {
-        p1[v] = p2[v] = -(cs[v] / 2.) + cs[v] / (double)(2 * nv) + (double)i * (cs[v] / (double)nv);
+        p1[v] = p2[v] = -DIV(cs[v], 2.) + DIV(cs[v], (double)(2 * nv)) + MUL((double)i, DIV(cs[v], (double)nv));
         for (int j = 0; j < nw; j++) {
-            p1[w] = p2[w] = -(cs[w] / 2.) + cs[w] / (double)(2 * nw) + (double)j * (cs[w] / (double)nw);
+            p1[w] = p2[w] = -DIV(cs[w], 2.) + DIV(cs[w], (double)(2 * nw)) + MUL((double)j, DIV(cs[w], (double)nw));
             for (int a = 0; a < nx; a++) {
-                double rx = Rx - cx / 2 + cx / (double)(2 * nx) + (cx / (double)nx) * (double)a;
+                double rx = Rx - DIV(cx, 2.) + DIV(cx, (double)(2 * nx)) + MUL(DIV(cx, (double)nx), (double)a);
                 for (int b = 0; b < ny; b++) {
-                    double ry = Ry - cy / 2 + cy / (double)(2 * ny) + (cy / (double)ny) * (double)b;
+                    double ry = Ry - DIV(cy, 2.) + DIV(cy, (double)(2 * ny)) + MUL(DIV(cy, (double)ny), (double)b);
                     for (int c = 0; c < nz; c++) {
-                        double rz = Rz - cz / 2 + cz / (double)(2 * nz) + (cz / (double)nz) * (double)c;
+                        double rz = Rz - DIV(cz, 2.) + DIV(cz, (double)(2 * nz)) + MUL(DIV(cz, (double)nz), (double)c);
 
                         double R2x = rx - p1[0], R2y = ry - p1[1], R2z = rz - p1[2];
-                        double r = sqrt(R2x * R2x + R2y * R2y + R2z * R2z);
-                        double qr = charge / (PI4 * r * r * r);
-                        double bx = R2x * qr;
-                        double by = R2y * qr;
-                        double bz = R2z * qr;
+                        double r = SQRT(MUL(R2x, R2x) + MUL(R2y, R2y) + MUL(R2z, R2z));
+                        double qr = DIV(charge, MUL(MUL(MUL(PI4, r), r), r));
+                        double bx = MUL(R2x, qr);
+                        double by = MUL(R2y, qr);
+                        double bz = MUL(R2z, qr);
 
                         R2x = rx - p2[0];
                         R2y = ry - p2[1];
                         R2z = rz - p2[2];
-                        r = sqrt(R2x * R2x + R2y * R2y + R2z * R2z);
-                        qr = -charge / (PI4 * r * r * r);
-                        B[0] += (bx + R2x * qr);
-                        B[1] += (by + R2y * qr);
-                        B[2] += (bz + R2z * qr);
+                        r = SQRT(MUL(R2x, R2x) + MUL(R2y, R2y) + MUL(R2z, R2z));
+                        qr = DIV(-charge, MUL(MUL(MUL(PI4, r), r), r));
+                        B[0] += (bx + MUL(R2x, qr));
+                        B[1] += (by + MUL(R2y, qr));
+                        B[2] += (bz + MUL(R2z, qr));
                     }
                 }
             }
