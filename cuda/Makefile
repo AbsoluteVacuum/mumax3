@@ -75,6 +75,11 @@ wrappers: $(WRAPPERS)
 	@ cp $(basename $<)_wrapper.go $(basename $<)_wrapper.go_linux_cuda${CUDA_VERSION}.tmp
 
 
+# demag kernel must match the CPU arithmetic exactly: no fused multiply-add
+demagaddends_wrapper.go: NVCCFLAGS += -fmad=false
+demagaddends_wrapper.go demagsum_wrapper.go: demagkernel_gpu.h
+
+
 cuda2go: cuda2go.go
 	go build $<
 

@@ -29,6 +29,7 @@ func init() {
 
 	DeclVar("EnableDemag", &EnableDemag, "Enables/disables demag (default=true)")
 	DeclVar("DemagAccuracy", &DemagAccuracy, "Controls accuracy of demag kernel")
+	DeclVar("FasterPBCKernel", &mag.FasterPBCKernel, "Compute the demag kernel on the GPU (fallback: multithreaded CPU), same result as the standard method, much faster for many PBC images")
 	registerEnergy(GetDemagEnergy, AddEdens_demag)
 }
 
