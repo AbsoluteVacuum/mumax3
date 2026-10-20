@@ -3,9 +3,12 @@ package cuda
 import (
 	"math"
 	"os"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/mumax/3/cuda/cu"
 	"github.com/mumax/3/data"
 	"github.com/mumax/3/mag"
 )
@@ -19,6 +22,23 @@ const (
 	oldKernelTol  = 1e-4
 	fastKernelTol = 1e-10
 )
+
+// pinGPU locks the test goroutine to its OS thread and makes a CUDA context current there.
+// A CUDA context is current per OS thread, and Go moves goroutines between threads (the CPU
+// reference kernels in these tests start many goroutines), so without this a later GPU call can
+// fail with CUDA_ERROR_INVALID_CONTEXT. mumax3 itself is not affected: cuda.Init locks the main
+// thread, which then does all CUDA work.
+var (
+	testCtx     cu.Context
+	testCtxOnce sync.Once
+)
+
+func pinGPU(t *testing.T) {
+	runtime.LockOSThread()
+	t.Cleanup(runtime.UnlockOSThread)
+	testCtxOnce.Do(func() { testCtx = cu.CtxCreate(cu.CTX_SCHED_AUTO, 0) })
+	cu.CtxSetCurrent(testCtx)
+}
 
 func maxAbsKernel(k [3][3]*data.Slice) float64 {
 	m := 0.0
@@ -84,6 +104,7 @@ func checkOddComponentsVanish(t *testing.T, name string, k [3][3]*data.Slice) {
 }
 
 func TestDemagKernelGPU(t *testing.T) {
+	pinGPU(t)
 	cases := []struct {
 		name      string
 		size, pbc [3]int
@@ -129,6 +150,7 @@ func TestDemagKernelGPUBig(t *testing.T) {
 	if os.Getenv("MUMAX_BIG_KERNEL") == "" {
 		t.Skip("set MUMAX_BIG_KERNEL=1")
 	}
+	pinGPU(t)
 	cell := [3]float64{5e-9, 5e-9, 2e-9}
 	cases := []struct {
 		name      string
