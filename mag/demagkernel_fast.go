@@ -14,9 +14,15 @@ import (
 	"github.com/mumax/3/util"
 )
 
-// FasterPBCKernel selects CalcDemagKernelGPU, then CalcDemagKernelFast, instead of CalcDemagKernel.
-// Set from the input script: FasterPBCKernel = true
-var FasterPBCKernel = false
+// FasterPBCKernel selects the demag kernel method. Set from the input script, case-insensitive:
+//
+//	FasterPBCKernel = "off"   // or "old": original CalcDemagKernel (default)
+//	FasterPBCKernel = "CPU"   // CalcDemagKernelFast: all CPU cores
+//	FasterPBCKernel = "GPU"   // CalcDemagKernelGPU
+//	FasterPBCKernel = "auto"  // GPU if it has full-rate float64 and the job is large, else CPU
+//
+// Fallbacks, each logged: GPU -> CPU (no usable GPU) -> old (not enough memory for the CPU method).
+var FasterPBCKernel = "off"
 
 // DemagKernelGPU is set by package cuda. It computes the non-skipped half space
 // (indices 0..size/2 in each direction) with the arithmetic and summation order of CalcDemagKernel,
@@ -24,19 +30,88 @@ var FasterPBCKernel = false
 // returning 6 slots (XX XY XZ YY YZ ZZ) of hz*hy*hx floats, index (z*hy+y)*hx+x.
 var DemagKernelGPU func(size, r1, r2 [3]int, cellsize [3]float64, accuracy, L float64) ([]float32, error)
 
-// calcKernel dispatches: GPU, else multithreaded CPU, else the original calculation.
+// DemagKernelGPUFP64Ratio is set by package cuda: the GPU's single/double precision throughput ratio
+// (2 on data-centre GPUs such as V100/A100/H100, 32-64 on GeForce/RTX cards), 0 if unknown.
+var DemagKernelGPUFP64Ratio func() int
+
+// "auto" uses the GPU only above this many (cell, PBC image) evaluations and only with full-rate FP64.
+// ponytail: heuristic from first measurements (an RTX-class GPU was slower than 16 CPU cores in every
+// case, mostly due to the serial near-field integration per thread); tune with A100/H100 timings, or
+// replace by a short timing probe if that proves unreliable.
+const autoGPUMinImages = 1e8
+
+// kernelMethod normalizes a FasterPBCKernel value to "old", "cpu", "gpu" or "auto".
+func kernelMethod(v string) (string, error) {
+	switch m := strings.ToLower(strings.TrimSpace(v)); m {
+	case "off", "old", "":
+		return "old", nil
+	case "cpu", "gpu", "auto":
+		return m, nil
+	}
+	return "", fmt.Errorf(`FasterPBCKernel = %q: use "off", "old", "CPU", "GPU" or "auto"`, v)
+}
+
+// autoUseGPU decides "auto": GPU only if it has full-rate FP64 and there are enough image evaluations.
+func autoUseGPU(images float64) (bool, string) {
+	if DemagKernelGPU == nil || DemagKernelGPUFP64Ratio == nil {
+		return false, "no GPU implementation"
+	}
+	ratio := DemagKernelGPUFP64Ratio()
+	if ratio == 0 || ratio > 4 {
+		return false, fmt.Sprintf("GPU float64 throughput is 1/%d of float32", ratio)
+	}
+	if images < autoGPUMinImages {
+		return false, fmt.Sprintf("only %.3g image evaluations (GPU from %.0e)", images, autoGPUMinImages)
+	}
+	return true, fmt.Sprintf("%.3g image evaluations, full-rate float64 GPU", images)
+}
+
+// imageEvaluations: number of (source component, destination cell, PBC image) evaluations of the kernel.
+func imageEvaluations(inputSize, pbc [3]int) float64 {
+	size := padSize(inputSize, pbc)
+	r1, r2 := kernelRanges(size, pbc)
+	total := 3.0
+	for c := 0; c < 3; c++ {
+		sum := 0
+		for t := 0; t <= size[c]/2; t++ {
+			f := r1[c] + ((t-r1[c])%size[c]+size[c])%size[c]
+			if f <= r2[c] {
+				sum += (r2[c]-f)/size[c] + 1
+			}
+		}
+		total *= float64(sum)
+	}
+	return total
+}
+
+// calcKernel dispatches on FasterPBCKernel.
 //
-// Migration plan: (1) now: opt-in via FasterPBCKernel = true; (2) later: make true the default above;
-// (3) finally: delete CalcDemagKernel (demagkernel.go) and the last fallback below; for the low-memory
-// case, let CalcDemagKernelFast run with mirror=false instead of returning ok=false (no extra memory).
+// Migration plan: (1) now: opt-in, default "off"; (2) later: make "auto" the default above;
+// (3) finally: delete CalcDemagKernel (demagkernel.go) and the "old" branch and last fallback below; for
+// the low-memory case, let CalcDemagKernelFast run with mirror=false instead of returning ok=false.
 // Nothing in the new code depends on CalcDemagKernel; the tests use it only as a reference.
 func calcKernel(inputSize, pbc [3]int, cellsize [3]float64, accuracy float64) [3][3]*data.Slice {
-	if FasterPBCKernel {
+	method, err := kernelMethod(FasterPBCKernel)
+	if err != nil {
+		util.Fatal(err)
+	}
+	if method == "auto" {
+		useGPU, why := autoUseGPU(imageEvaluations(inputSize, pbc))
+		method = "cpu"
+		if useGPU {
+			method = "gpu"
+		}
+		util.Log("//FasterPBCKernel auto: using", strings.ToUpper(method), "(", why, ")")
+	}
+	if method == "gpu" {
 		k, err := CalcDemagKernelGPU(inputSize, pbc, cellsize, accuracy)
 		if err == nil {
 			return k
 		}
 		util.Log("//FasterPBCKernel: GPU kernel unavailable (", err, "), trying multithreaded CPU")
+		method = "cpu"
+	}
+	if method == "cpu" {
 		if k, ok := CalcDemagKernelFast(inputSize, pbc, cellsize, accuracy, availableMemory()/2); ok {
 			return k
 		}

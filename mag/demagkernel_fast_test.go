@@ -127,3 +127,62 @@ func TestBigKernel(t *testing.T) {
 	_, ok := CalcDemagKernelFast([3]int{16384, 1, 32}, [3]int{3, 1000, 0}, [3]float64{5e-9, 5e-9, 2e-9}, 6, availableMemory()/2)
 	t.Logf("ok=%v, %v", ok, time.Since(t0))
 }
+
+func TestKernelMethod(t *testing.T) {
+	for in, want := range map[string]string{"off": "old", "OLD": "old", "": "old", "CPU": "cpu", "gpu": "gpu", " Auto ": "auto"} {
+		if got, err := kernelMethod(in); err != nil || got != want {
+			t.Errorf("kernelMethod(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"true", "fast", "cuda"} {
+		if _, err := kernelMethod(bad); err == nil {
+			t.Errorf("kernelMethod(%q): expected error", bad)
+		}
+	}
+}
+
+func TestAutoUseGPU(t *testing.T) {
+	defer func(g func([3]int, [3]int, [3]int, [3]float64, float64, float64) ([]float32, error), r func() int) {
+		DemagKernelGPU, DemagKernelGPUFP64Ratio = g, r
+	}(DemagKernelGPU, DemagKernelGPUFP64Ratio)
+
+	DemagKernelGPU, DemagKernelGPUFP64Ratio = nil, nil
+	if use, _ := autoUseGPU(1e12); use {
+		t.Error("auto chose GPU without a GPU implementation")
+	}
+	DemagKernelGPU = func([3]int, [3]int, [3]int, [3]float64, float64, float64) ([]float32, error) { return nil, nil }
+	for _, c := range []struct {
+		ratio  int
+		images float64
+		want   bool
+	}{{64, 1e12, false}, {32, 1e12, false}, {0, 1e12, false}, {2, 1e6, false}, {2, 1e9, true}} {
+		ratio := c.ratio
+		DemagKernelGPUFP64Ratio = func() int { return ratio }
+		if use, why := autoUseGPU(c.images); use != c.want {
+			t.Errorf("ratio %d, %g images: GPU=%v (%s), want %v", c.ratio, c.images, use, why, c.want)
+		}
+	}
+}
+
+// imageEvaluations must count exactly the (s, cell, image) evaluations of CalcDemagKernel's loops.
+func TestImageEvaluations(t *testing.T) {
+	for _, c := range []struct{ size, pbc [3]int }{
+		{[3]int{16, 1, 4}, [3]int{3, 100, 0}}, {[3]int{8, 6, 5}, [3]int{2, 3, 1}}, {[3]int{10, 7, 3}, [3]int{0, 0, 0}}, {[3]int{9, 1, 1}, [3]int{4, 50, 0}},
+	} {
+		size := padSize(c.size, c.pbc)
+		r1, r2 := kernelRanges(size, c.pbc)
+		n := 0
+		for z := r1[Z]; z <= r2[Z]; z++ {
+			for y := r1[Y]; y <= r2[Y]; y++ {
+				for x := r1[X]; x <= r2[X]; x++ {
+					if wrap(x, size[X]) <= size[X]/2 && wrap(y, size[Y]) <= size[Y]/2 && wrap(z, size[Z]) <= size[Z]/2 {
+						n += 3
+					}
+				}
+			}
+		}
+		if got := imageEvaluations(c.size, c.pbc); got != float64(n) {
+			t.Errorf("%v pbc %v: imageEvaluations = %g, loops = %d", c.size, c.pbc, got, n)
+		}
+	}
+}

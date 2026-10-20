@@ -10,8 +10,22 @@ import (
 	"github.com/mumax/3/util"
 )
 
-// Plug the GPU demag kernel into package mag (used when FasterPBCKernel = true).
-func init() { mag.DemagKernelGPU = demagKernelHalfGPU }
+// Plug the GPU demag kernel into package mag (used when FasterPBCKernel = "GPU" or "auto").
+func init() {
+	mag.DemagKernelGPU = demagKernelHalfGPU
+	mag.DemagKernelGPUFP64Ratio = gpuFP64Ratio
+}
+
+// gpuFP64Ratio returns the current GPU's single/double precision throughput ratio, 0 if unknown.
+func gpuFP64Ratio() (ratio int) {
+	defer func() {
+		if recover() != nil {
+			ratio = 0
+		}
+	}()
+	const singleToDoublePerfRatio = cu.DeviceAttribute(87) // CU_DEVICE_ATTRIBUTE_SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO
+	return cu.CtxGetDevice().Attribute(singleToDoublePerfRatio)
+}
 
 // demagKernelHalfGPU computes the non-skipped half space of the demag kernel.
 // Returns 6 slots (XX XY XZ YY YZ ZZ) of hz*hy*hx floats; any CUDA failure becomes an error.
