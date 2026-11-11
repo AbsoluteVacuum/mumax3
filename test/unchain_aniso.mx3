@@ -1,0 +1,96 @@
+/*
+	Tests ext_Unchain on uniaxial anisotropy (Ku1, Ku2, anisU).
+	Region-wise and unchained parameters with the same cell values must give the
+	same dynamics and energy (tolerance only covers the summation order of Average()).
+*/
+
+SetGridSize(64, 32, 1)
+SetCellSize(4e-9, 4e-9, 4e-9)
+Msat = 8e5
+Aex = 13e-12
+alpha = 0.1
+FixDt = 1e-13
+
+left := XRange(-inf, 0)
+DefRegion(1, left)
+Ku1 = 3e5
+Ku1.SetRegion(1, 5e5)
+Ku2 = 1e4
+anisU = vector(0, 0, 1)
+anisU.SetRegion(1, vector(1, 0, 0))
+
+// reference: region-wise anisotropy
+m = Uniform(1, 0.3, 0.5)
+Run(0.2e-9)
+mxRef := m.Comp(0).Average()
+mzRef := m.Comp(2).Average()
+eRef := E_anis.Get()
+
+// unchain keeps the region values per cell
+ext_Unchain(Ku1)
+ext_Unchain(Ku2)
+ext_Unchain(anisU)
+expect("Ku1 region 1", Ku1.Region(1).Average(), 5e5, 1e-2)
+expect("Ku1 region 0", Ku1.Region(0).Average(), 3e5, 1e-2)
+expect("anisU region 1 x", anisU.Region(1).Average().X(), 1, 1e-7)
+expect("anisU region 0 z", anisU.Region(0).Average().Z(), 1, 1e-7)
+
+// same values, now per cell: identical dynamics and energy
+t = 0
+m = Uniform(1, 0.3, 0.5)
+Run(0.2e-9)
+expect("unchained mx", m.Comp(0).Average(), mxRef, 1e-6)
+expect("unchained mz", m.Comp(2).Average(), mzRef, 1e-6)
+expect("unchained E_anis", E_anis.Get()/eRef, 1, 1e-5)
+
+// rebuild the same maps with the per-cell setter (number for Ku1, vector for anisU)
+ext_SetParamInShape(Ku1, Universe(), 3e5)
+ext_SetParamInShape(Ku1, left, 5e5)
+ext_SetParamInShape(anisU, Universe(), vector(0, 0, 1))
+ext_SetParamInShape(anisU, left, vector(1, 0, 0))
+t = 0
+m = Uniform(1, 0.3, 0.5)
+Run(0.2e-9)
+expect("SetParamInShape mx", m.Comp(0).Average(), mxRef, 1e-6)
+expect("SetParamInShape mz", m.Comp(2).Average(), mzRef, 1e-6)
+
+// per-cell axes from a vector mask: checkerboard of z and x axes.
+// m along z: E = -Ku1 (m.u)^2 is -K on z cells and 0 on x cells, so <Edens> = -K/2
+K := 4e5
+ext_SetParamInShape(Ku1, Universe(), K)
+ext_SetParamInShape(Ku2, Universe(), 0)
+mask := NewVectorMask(64, 32, 1)
+for i := 0; i < 64; i++ {
+	for j := 0; j < 32; j++ {
+		mask.SetVector(i, j, 0, vector(1, 0, 0))
+	}
+}
+for i := 0; i < 64; i = i + 2 {
+	for j := 0; j < 32; j = j + 2 {
+		mask.SetVector(i, j, 0, vector(0, 0, 1))
+		mask.SetVector(i+1, j+1, 0, vector(0, 0, 1))
+	}
+}
+ext_SetParamMask(anisU, mask)
+m = Uniform(0, 0, 1)
+expect("checkerboard Edens", Edens_anis.Average()/K, -0.5, 1e-5)
+
+// unnormalized axes are normalized by the kernel
+ext_SetParamInShape(anisU, Universe(), vector(0, 0, 7))
+expect("unnormalized axis", Edens_anis.Average()/K, -1, 1e-5)
+
+// all-zero unchained K gives zero energy
+ext_SetParamInShape(Ku1, Universe(), 0)
+expect("zero Ku1", Edens_anis.Average(), 0, 0)
+
+// rechain restores the original region tables
+ext_Rechain(Ku1)
+ext_Rechain(Ku2)
+ext_Rechain(anisU)
+expect("rechain Ku1 region 1", Ku1.GetRegion(1), 5e5, 1e-2)
+expect("rechain Ku2", Ku2.GetRegion(0), 1e4, 1e-3)
+expect("rechain anisU region 1 x", anisU.GetRegion(1)[0], 1, 1e-7)
+t = 0
+m = Uniform(1, 0.3, 0.5)
+Run(0.2e-9)
+expect("rechain mx", m.Comp(0).Average(), mxRef, 1e-6)
