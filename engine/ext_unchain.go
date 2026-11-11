@@ -14,6 +14,7 @@ func init() {
 	DeclFunc("ext_Unchain", Unchain, "Switches a parameter from region-wise to per-cell values (currently alpha, Ku1, Ku2, anisU). Every cell starts at its region's value.")
 	DeclFunc("ext_Rechain", Rechain, "Switches an unchained parameter back to region-wise values, as they were before ext_Unchain.")
 	DeclFunc("ext_SetParamInShape", SetParamInShape, "Sets an unchained parameter to a value (scalar e.g. for alpha or vector e.g. for anisU) inside a shape.")
+	DeclFunc("ext_SetParamQuantity", SetParamQuantity, "Sets all per-cell values of an unchained parameter from a quantity evaluated now, e.g. CustomQuantity(mask) combined with Add, Mul, Madd, Const. May refer to the parameter itself.")
 	DeclFunc("ext_SetParamMask", SetParamMask, "Sets all per-cell values of an unchained parameter from a mask (NewScalarMask, NewVectorMask, or LoadFile), resampled to the mesh if needed.")
 }
 
@@ -102,6 +103,20 @@ func SetParamMask(param unchainable, mask *data.Slice) {
 		mask = data.Resample(mask, Mesh().Size())
 	}
 	data.Copy(p.cellBuf(), mask)
+}
+
+func SetParamQuantity(param unchainable, q Quantity) {
+	p := param.rw()
+	assertUnchained(p, "ext_SetParamQuantity")
+	if q.NComp() != p.NComp() {
+		util.Fatal("ext_SetParamQuantity: quantity has ", q.NComp(), " components, ", p.name, " needs ", p.NComp())
+	}
+	if SizeOf(q) != Mesh().Size() {
+		util.Fatal("ext_SetParamQuantity: quantity size ", SizeOf(q), " does not match the mesh ", Mesh().Size())
+	}
+	v := ValueOf(q) // evaluate into a temporary first: q may read p itself (e.g. Mul(Const(2), alpha))
+	defer cuda.Recycle(v)
+	data.Copy(p.cellBuf(), v)
 }
 
 func assertUnchained(p *regionwise, fn string) {
