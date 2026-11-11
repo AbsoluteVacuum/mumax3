@@ -11,9 +11,9 @@ import (
 )
 
 func init() {
-	DeclFunc("ext_Unchain", Unchain, "Switches a parameter from region-wise to per-cell values (currently alpha). Every cell starts at its region's value.")
+	DeclFunc("ext_Unchain", Unchain, "Switches a parameter from region-wise to per-cell values (currently alpha, Ku1, Ku2, anisU). Every cell starts at its region's value.")
 	DeclFunc("ext_Rechain", Rechain, "Switches an unchained parameter back to region-wise values, as they were before ext_Unchain.")
-	DeclFunc("ext_SetParamInShape", SetParamInShape, "Sets an unchained parameter to a value (scalar or vector) inside a shape.")
+	DeclFunc("ext_SetParamInShape", SetParamInShape, "Sets an unchained parameter to a value (scalar e.g. for alpha or vector e.g. for anisU) inside a shape.")
 	DeclFunc("ext_SetParamMask", SetParamMask, "Sets all per-cell values of an unchained parameter from a mask (NewScalarMask, NewVectorMask, or LoadFile), resampled to the mesh if needed.")
 }
 
@@ -30,7 +30,7 @@ func canUnchain(p *regionwise) bool {
 func Unchain(param unchainable) {
 	p := param.rw()
 	if !canUnchain(p) {
-		util.Fatal("ext_Unchain: only alpha can be unchained so far, not ", p.name)
+		util.Fatal("ext_Unchain: only alpha, Ku1, Ku2, and anisU can be unchained so far, not ", p.name)
 	}
 	if p.cell != nil {
 		return
