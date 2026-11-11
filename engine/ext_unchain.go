@@ -24,7 +24,7 @@ func (p *regionwise) rw() *regionwise { return p }
 
 // only params whose every use goes through MSlice/EvalTo/nonZero. Msat also reads the LUT directly (hasZero, lex2); needs more attention.
 func canUnchain(p *regionwise) bool {
-	return p == &Alpha.regionwise
+	return p == &Alpha.regionwise || p == &Ku1.regionwise || p == &Ku2.regionwise || p == &AnisU.regionwise
 }
 
 func Unchain(param unchainable) {
